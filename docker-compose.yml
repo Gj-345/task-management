@@ -1,0 +1,84 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: auth_db
+      # Dedicated account with access to auth_db only; auth-service does not use root
+      MYSQL_USER: ${MYSQL_USER:-auth_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo-data:/data/db
+
+  auth-service:
+    build: ./auth-service
+    environment:
+      GIN_MODE: release
+      PORT: "8080"
+      DB_USER: ${MYSQL_USER:-auth_app}
+      DB_PASSWORD: ${MYSQL_PASSWORD}
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      DB_NAME: auth_db
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN:-http://localhost:3000}
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  task-service:
+    build: ./task-service
+    environment:
+      PORT: "3002"
+      MONGODB_URI: mongodb://mongo:27017/tasks
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN:-http://localhost:3000}
+    ports:
+      - "3002:3002"
+    depends_on:
+      - mongo
+
+  notification-service:
+    build: ./notification-service
+    environment:
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      AUTH_SERVICE_URL: http://auth-service:8080
+      GMAIL_USER: ${GMAIL_USER:-}
+      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
+      CORS_ALLOW_ORIGIN: ${CORS_ALLOW_ORIGIN:-http://localhost:3000}
+    ports:
+      - "8082:8082"
+    depends_on:
+      - auth-service
+
+  # NEXT_PUBLIC_* values are baked into the browser bundle at build time, so they
+  # must be URLs the user's browser can reach (not Docker-internal hostnames).
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_AUTH_URL: ${PUBLIC_AUTH_URL:-http://localhost:8080}
+        NEXT_PUBLIC_TASK_URL: ${PUBLIC_TASK_URL:-http://localhost:3002}
+        NEXT_PUBLIC_NOTIFICATION_URL: ${PUBLIC_NOTIFICATION_URL:-http://localhost:8082}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - auth-service
+      - task-service
+      - notification-service
+
+volumes:
+  mysql-data:
+  mongo-data:
